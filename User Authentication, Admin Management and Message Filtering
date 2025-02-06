@@ -1,0 +1,189 @@
+# Importing the necessary libraries and modules
+from flask import Flask, request, jsonify, session
+import sqlite3
+from werkzeug.security import generate_password_hash, check_password_hash
+import re
+
+# Initializing the Flask app
+app = Flask(__name__)
+app.secret_key = "secure_random_key_b"
+
+# Database connection function
+def create_connection():
+    conn = sqlite3.connect("messaging_system.db")
+    conn.row_factory = sqlite3.Row  # To return rows as dictionaries
+    return conn
+
+#  USER AUTHENTICATION FUNCTIONS
+
+# User Registration Endpoint
+@app.route('/register', methods=['POST'])
+def register():
+#    Registers a new user by saving their details in the database ensuring password is hashed and username is unique.
+    user_data = request.json
+
+    # Input validation
+    if not user_data.get("username") or not user_data.get("password"):
+        return jsonify({"error": "Username and password are required"}), 400
+
+    # Password validation
+    if len(user_data['password']) < 8 or not re.search(r'\d', user_data['password']):
+        return jsonify({"error": "Password must be at least 8 characters long and include a number."}), 400
+
+    try:
+        conn = create_connection()
+        cur = conn.cursor()
+
+        # Checking if username exists
+        cur.execute("SELECT * FROM users WHERE username = ?", (user_data['username'],))
+        if cur.fetchone():
+            return jsonify({"error": "Username already exists"}), 409
+
+        # Hashing the password
+        hashed_password = generate_password_hash(user_data['password'])
+
+        # Inserting user into the database
+        cur.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                    (user_data['username'], hashed_password, "student"))
+        conn.commit()
+        return jsonify({"message": "User registered successfully"}), 201
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        conn.close()
+
+# User Login Endpoint
+@app.route('/login', methods=['POST'])
+def login():
+#    Logs in a user by verifying their username and password createing a session for the authenticated user.
+    credentials = request.json
+
+    # Input validation
+    if not credentials.get("username") or not credentials.get("password"):
+        return jsonify({"error": "Username and password are required"}), 400
+
+    try:
+        conn = create_connection()
+        cur = conn.cursor()
+
+        # Fetching user details
+        cur.execute("SELECT * FROM users WHERE username = ?", (credentials['username'],))
+        user = cur.fetchone()
+
+        if user and check_password_hash(user['password'], credentials['password']):
+            session['user_id'] = user['id']
+            session['role'] = user['role']
+            return jsonify({"message": "Login successful"}), 200
+        else:
+            return jsonify({"error": "Invalid username or password"}), 401
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        conn.close()
+
+
+#  ADMIN MANAGEMENT FUNCTIONS
+
+
+@app.route('/admin/mute_user', methods=['POST'])
+def mute_user():
+
+#    Mutes a user by setting a 'muted' flag in the database, the admin role required.
+    if session.get('role') != 'admin':
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.json
+    user_id = data.get("user_id")
+
+    if not user_id:
+        return jsonify({"error": "User ID is required"}), 400
+
+    try:
+        conn = create_connection()
+        cur = conn.cursor()
+
+        # Mute the user
+        cur.execute("UPDATE users SET muted = 1 WHERE id = ?", (user_id,))
+        conn.commit()
+
+        return jsonify({"message": f"User {user_id} has been muted"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        conn.close()
+
+@app.route('/admin/unmute_user', methods=['POST'])
+def unmute_user():
+   # Unmutes a previously muted user. Admin role is still required.
+    if session.get('role') != 'admin':
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.json
+    user_id = data.get("user_id")
+
+    if not user_id:
+        return jsonify({"error": "User ID is required"}), 400
+
+    try:
+        conn = create_connection()
+        cur = conn.cursor()
+
+        # Unmute the user
+        cur.execute("UPDATE users SET muted = 0 WHERE id = ?", (user_id,))
+        conn.commit()
+
+        return jsonify({"message": f"User {user_id} has been unmuted"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        conn.close()
+
+
+#  MESSAGE FILTERING FUNCTIONS
+
+@app.route('/send_message', methods=['POST'])
+def send_message():
+   # Sends a message and applies a filter to detect inappropriate content.
+    message_data = request.json
+
+    # Input validation
+    if not message_data.get("message") or not message_data.get("recipient_id"):
+        return jsonify({"error": "Message content and recipient ID are required"}), 400
+
+    filtered_words = ["badword1", "badword2"]  # Example inappropriate words
+
+    # Checking for inappropriate content
+    for word in filtered_words:
+        if word in message_data['message'].lower():
+            return jsonify({"error": "Inappropriate content detected"}), 400
+
+    try:
+        conn = create_connection()
+        cur = conn.cursor()
+
+        # Saveing the message to the database
+        cur.execute("INSERT INTO messages (sender_id, recipient_id, message) VALUES (?, ?, ?)",
+                    (session.get('user_id'), message_data['recipient_id'], message_data['message']))
+        conn.commit()
+
+        return jsonify({"message": "Message sent successfully"}), 201
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        conn.close()
+
+
+#  START THE APPLICATION
+
+if __name__ == '__main__':
+    app.run(debug=True)
