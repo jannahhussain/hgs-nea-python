@@ -1,0 +1,111 @@
+from flask import Flask, request, jsonify, session
+from werkzeug.security import generate_password_hash, check_password_hash
+import sqlite3
+
+app = Flask(__name__)
+app.secret_key = "super_secret_key"
+
+# Database connection
+def get_db_connection():
+    conn = sqlite3.connect("messaging_system.db")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+# User registration
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.json
+    username = data.get("username")
+    password = data.get("password")
+    security_question = data.get("security_question")
+    security_answer = generate_password_hash(data.get("security_answer"))
+
+    if not username or not password or not security_question:
+        return jsonify({"error": "Missing fields"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Checking if user exists
+    cursor.execute("SELECT * FROM users WHERE username=?", (username,))
+    if cursor.fetchone():
+        return jsonify({"error": "User already exists"}), 409
+
+    cursor.execute("INSERT INTO users (username, password, security_question, security_answer) VALUES (?, ?, ?, ?)",
+                   (username, generate_password_hash(password), security_question, security_answer))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": "User registered successfully"}), 201
+
+# User login
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    username = data.get("username")
+    password = data.get("password")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE username=?", (username,))
+    user = cursor.fetchone()
+
+    if user and check_password_hash(user["password"], password):
+        session["user_id"] = user["id"]
+        return jsonify({"message": "Login successful"}), 200
+    return jsonify({"error": "Invalid credentials"}), 401
+
+# Password Reset
+@app.route('/reset_password', methods=['POST'])
+def reset_password():
+    data = request.json
+    username = data.get("username")
+    security_answer = data.get("security_answer")
+    new_password = generate_password_hash(data.get("new_password"))
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE username=?", (username,))
+    user = cursor.fetchone()
+
+    if user and check_password_hash(user["security_answer"], security_answer):
+        cursor.execute("UPDATE users SET password=? WHERE username=?", (new_password, username))
+        conn.commit()
+        return jsonify({"message": "Password reset successful"}), 200
+    return jsonify({"error": "Incorrect security answer"}), 401
+
+# Notification System - Friend Requests
+@app.route('/friend_request', methods=['POST'])
+def send_friend_request():
+    data = request.json
+    sender_id = session.get("user_id")
+    recipient_id = data.get("recipient_id")
+
+    if not sender_id or not recipient_id:
+        return jsonify({"error": "Invalid request"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO friend_requests (sender_id, recipient_id, status) VALUES (?, ?, ?)",
+                   (sender_id, recipient_id, "pending"))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": "Friend request sent"}), 200
+
+# Accept Friend Request
+@app.route('/accept_request', methods=['POST'])
+def accept_friend_request():
+    data = request.json
+    request_id = data.get("request_id")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE friend_requests SET status='accepted' WHERE id=?", (request_id,))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": "Friend request accepted"}), 200
+
+if __name__ == "__main__":
+    app.run(debug=True)
